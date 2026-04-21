@@ -41,6 +41,19 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0 Safari/537.36"
 )
 
+INFORMATIVE_KEYWORDS = (
+    "milheiro",
+    "pontos mais dinheiro",
+    "ponto mais dinheiro",
+    "pontos + dinheiro",
+    "gerar milhas",
+    "gerar pontos",
+    "compra de pontos",
+    "ultimas horas",
+    "ultimo dia",
+    "prorrogado",
+)
+
 
 def normalize_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text)
@@ -179,6 +192,18 @@ def format_published_at(value: str | None) -> str:
         return value
 
 
+def parse_published_at(value: str) -> datetime | None:
+    try:
+        return datetime.strptime(value, "%d/%m/%Y %H:%M").replace(tzinfo=SAO_PAULO_TZ)
+    except ValueError:
+        return None
+
+
+def is_informative_item(title: str) -> bool:
+    text = normalize_text(title)
+    return any(keyword in text for keyword in INFORMATIVE_KEYWORDS)
+
+
 def extract_bonus(summary: str, title: str) -> str:
     text = f"{title} {summary}"
     matches = re.findall(r"(\d{1,3}%\s+de\s+bonus|\d{1,3}%)", normalize_text(text), flags=re.IGNORECASE)
@@ -186,20 +211,80 @@ def extract_bonus(summary: str, title: str) -> str:
 
 
 def build_message(items: list[dict]) -> str:
-    now_text = datetime.now(SAO_PAULO_TZ).strftime("%d/%m/%Y %H:%M")
-    lines = [f"Promocoes de transferencia detectadas em {now_text}"]
+    now = datetime.now(SAO_PAULO_TZ)
+    now_text = now.strftime("%d/%m/%Y %H:%M")
+    today = now.date()
+
+    primary_today = []
+    primary_recent = []
+    informative = []
+
     for item in items:
-        lines.extend(
-            [
-                "",
-                f"Parceiro: {item['target']}",
-                f"Titulo: {item['title']}",
-                f"Bonus: {item['bonus']}",
-                f"Publicado em: {item['published_at']}",
-                f"Resumo: {item['summary'] or 'Resumo nao encontrado'}",
-                f"Link: {item['url']}",
-            ]
-        )
+        published = parse_published_at(item["published_at"])
+        is_today = published.date() == today if published else False
+
+        if item["is_informative"]:
+            informative.append(item)
+        elif is_today:
+            primary_today.append(item)
+        else:
+            primary_recent.append(item)
+
+    lines = [f"Monitor de promocoes executado em {now_text}", ""]
+
+    if primary_today:
+        lines.append("Promocao de transferencia do dia: SIM")
+        for item in primary_today:
+            lines.extend(
+                [
+                    "",
+                    f"Parceiro: {item['target']}",
+                    f"Titulo: {item['title']}",
+                    f"Bonus: {item['bonus']}",
+                    f"Publicado em: {item['published_at']}",
+                    f"Resumo: {item['summary'] or 'Resumo nao encontrado'}",
+                    f"Link: {item['url']}",
+                ]
+            )
+    else:
+        lines.append("Promocao de transferencia do dia: NAO")
+        lines.append("Nenhuma promocao nova de transferencia foi publicada hoje nas fontes monitoradas.")
+
+    if primary_recent:
+        lines.append("")
+        lines.append("Outras promocoes recentes identificadas:")
+        for item in primary_recent:
+            lines.extend(
+                [
+                    "",
+                    f"Parceiro: {item['target']}",
+                    f"Titulo: {item['title']}",
+                    f"Bonus: {item['bonus']}",
+                    f"Publicado em: {item['published_at']}",
+                    f"Resumo: {item['summary'] or 'Resumo nao encontrado'}",
+                    f"Link: {item['url']}",
+                ]
+            )
+
+    if informative:
+        lines.append("")
+        lines.append("Informativos relacionados:")
+        for item in informative:
+            lines.extend(
+                [
+                    "",
+                    f"Parceiro: {item['target']}",
+                    f"Titulo: {item['title']}",
+                    f"Bonus: {item['bonus']}",
+                    f"Publicado em: {item['published_at']}",
+                    f"Resumo: {item['summary'] or 'Resumo nao encontrado'}",
+                    f"Link: {item['url']}",
+                ]
+            )
+
+    if not primary_today and not primary_recent and not informative:
+        lines.append("Nenhum item novo encontrado.")
+
     return "\n".join(lines)
 
 
@@ -243,6 +328,7 @@ def collect_new_promotions() -> tuple[list[dict], set[str]]:
                     "summary": summary,
                     "published_at": published_at,
                     "bonus": bonus,
+                    "is_informative": is_informative_item(title),
                 }
             )
             updated_seen.add(article_url)
