@@ -34,6 +34,14 @@ TARGETS = (
 SOURCE_PAGES = (
     "https://www.melhoresdestinos.com.br/milhas",
     "https://passageirodeprimeira.com/categorias/promocoes/",
+    "https://www.melhorescartoes.com.br/c/promocoes-milhas",
+)
+
+DIRECT_SOURCE_PAGES = (
+    "https://www.smiles.com.br/mfe/promocao",
+    "https://www.esfera.com.vc/termos-e-condicoes",
+    "https://www.voeazul.com.br/br/pt/ofertas/esfera",
+    "https://www.voeazul.com.br/br/pt/ofertas/itau",
 )
 
 USER_AGENT = (
@@ -53,6 +61,7 @@ INFORMATIVE_KEYWORDS = (
     "ultimo dia",
     "prorrogado",
 )
+MAX_TELEGRAM_MESSAGE_LENGTH = 3800
 
 
 def normalize_text(text: str) -> str:
@@ -90,6 +99,21 @@ def fetch_html(client: requests.Session, url: str) -> str:
     response = client.get(url, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response.text
+
+
+def extract_page_title(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    for tag_name, attrs in (
+        ("meta", {"property": "og:title"}),
+        ("meta", {"name": "twitter:title"}),
+    ):
+        tag = soup.find(tag_name, attrs=attrs)
+        if tag and tag.get("content"):
+            return " ".join(tag["content"].split())
+    heading = soup.find(["h1", "title"])
+    if heading:
+        return " ".join(heading.get_text(" ", strip=True).split())
+    return ""
 
 
 def extract_links_from_listing(html: str, base_url: str) -> list[tuple[str, str]]:
@@ -288,16 +312,53 @@ def build_message(items: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def split_text(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> list[str]:
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    current_lines: list[str] = []
+    current_length = 0
+    for line in text.splitlines():
+        line_length = len(line) + 1
+        if current_lines and current_length + line_length > max_length:
+            chunks.append("\n".join(current_lines))
+            current_lines = [line]
+            current_length = line_length
+        else:
+            current_lines.append(line)
+            current_length += line_length
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+    return chunks
+
+
 def send_telegram_message(text: str) -> None:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    response = requests.post(
-        url,
-        json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
+    for chunk in split_text(text):
+        response = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+
+
+def build_promotion_item(title: str, article_url: str, article_html: str, target: Target) -> dict:
+    summary = extract_article_summary(article_html)
+    published_at = format_published_at(extract_published_at(article_html))
+    bonus = extract_bonus(summary, title)
+    return {
+        "target": target.label,
+        "title": title,
+        "url": article_url,
+        "summary": summary,
+        "published_at": published_at,
+        "bonus": bonus,
+        "is_informative": is_informative_item(title),
+    }
 
 
 def collect_new_promotions() -> tuple[list[dict], set[str]]:
@@ -307,7 +368,10 @@ def collect_new_promotions() -> tuple[list[dict], set[str]]:
     client = session()
 
     for page_url in SOURCE_PAGES:
-        listing_html = fetch_html(client, page_url)
+        try:
+            listing_html = fetch_html(client, page_url)
+        except requests.RequestException:
+            continue
         for article_url, title in extract_links_from_listing(listing_html, page_url):
             target = detect_target(title)
             if not target:
@@ -315,30 +379,34 @@ def collect_new_promotions() -> tuple[list[dict], set[str]]:
             if article_url in updated_seen:
                 continue
 
-            article_html = fetch_html(client, article_url)
-            summary = extract_article_summary(article_html)
-            published_at = format_published_at(extract_published_at(article_html))
-            bonus = extract_bonus(summary, title)
+            try:
+                article_html = fetch_html(client, article_url)
+            except requests.RequestException:
+                continue
 
-            found.append(
-                {
-                    "target": target.label,
-                    "title": title,
-                    "url": article_url,
-                    "summary": summary,
-                    "published_at": published_at,
-                    "bonus": bonus,
-                    "is_informative": is_informative_item(title),
-                }
-            )
+            found.append(build_promotion_item(title, article_url, article_html, target))
             updated_seen.add(article_url)
+
+    for page_url in DIRECT_SOURCE_PAGES:
+        if page_url in updated_seen:
+            continue
+        try:
+            page_html = fetch_html(client, page_url)
+        except requests.RequestException:
+            continue
+        title = extract_page_title(page_html)
+        combined_text = f"{title} {extract_article_summary(page_html)}"
+        target = detect_target(combined_text)
+        if not target:
+            continue
+        found.append(build_promotion_item(title or page_url, page_url, page_html, target))
+        updated_seen.add(page_url)
 
     return found, updated_seen
 
 
 def main() -> int:
     items, updated_seen = collect_new_promotions()
-    save_seen_urls(updated_seen)
 
     if not items:
         print("Nenhuma promocao nova encontrada.")
@@ -346,6 +414,7 @@ def main() -> int:
 
     message = build_message(items)
     send_telegram_message(message)
+    save_seen_urls(updated_seen)
     print(f"{len(items)} promocao(oes) enviada(s) ao Telegram.")
     return 0
 

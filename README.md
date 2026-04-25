@@ -24,6 +24,11 @@ Os minutos `07` foram escolhidos para evitar o comeco exato da hora, quando o Gi
 
 - `https://www.melhoresdestinos.com.br/milhas`
 - `https://passageirodeprimeira.com/categorias/promocoes/`
+- `https://www.melhorescartoes.com.br/c/promocoes-milhas`
+- `https://www.smiles.com.br/mfe/promocao`
+- `https://www.esfera.com.vc/termos-e-condicoes`
+- `https://www.voeazul.com.br/br/pt/ofertas/esfera`
+- `https://www.voeazul.com.br/br/pt/ofertas/itau`
 
 ## O que voce precisa criar
 
